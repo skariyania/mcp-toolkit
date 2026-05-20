@@ -157,7 +157,7 @@ Sync direction:
   4)   Custom source path
   Choose [1-4, default 1]: 1
 
-Source file [\\wsl.localhost\Ubuntu\home\<user>\.codeium\windsurf\mcp_config.json]:
+Source file [\\wsl.localhost\<distro>\home\<user>\.codeium\windsurf\mcp_config.json]:
   source_os=wsl   target_os=windows
 
 Targets to update:
@@ -286,6 +286,7 @@ All env vars are **optional**; sensible defaults come from your current OS.
 | `MCP_SYNC_STATE_DIR` | OS-aware | `%LOCALAPPDATA%\mcp-sync` / `~/.local/state/mcp-sync` |
 | `MCP_WINDOWS_USER` | auto-detected | Windows username for cross-OS path translation. Set if Windows + WSL usernames differ. |
 | `MCP_WSL_USER` | auto-detected | WSL username for cross-OS path translation. Same caveat. |
+| `MCP_WSL_DISTRO` | auto-detected | WSL distribution name (`Ubuntu`, `Debian`, `kali-linux`, `openSUSE-Leap-15.5`, ...). Auto-detected via `WSL_DISTRO_NAME` env var inside WSL, or by listing `\\wsl.localhost\` from Windows. Set this if you have multiple distros installed and the auto-pick chooses the wrong one. |
 
 To set them persistently on Windows: `setx VAR value`. On WSL: append `export VAR=value` to `~/.bashrc` or `~/.profile`.
 
@@ -338,17 +339,29 @@ If your wrapper does anything else (multiple `exec` lines, custom logic, conditi
 
 This shim is a Linux-only Python helper that lives next to the wrapper. The translator detects it and skips with the reason `uses mcp-tool-rename.py shim (POSIX-only)`. To use those servers on Windows, you'd need to port the shim or use a different collision-avoidance strategy (e.g. running each Postgres MCP in its own container with separate names).
 
-### Cross-OS path translation assumes a specific user-directory layout
+### Cross-OS path translation needs distro + username
 
-For UNC paths (`\\wsl.localhost\Ubuntu\home\<user>`) and `/mnt/c/Users/<user>` translation, the toolkit:
+For UNC paths (`\\wsl.localhost\<distro>\home\<user>`) and `/mnt/c/Users/<user>` translation, the toolkit resolves three things:
 
-1. Honors `MCP_WSL_USER` and `MCP_WINDOWS_USER` env vars if set.
-2. Otherwise picks the first user directory found under the relevant root.
-3. Otherwise falls back to `$USER` / `%USERNAME%`.
+| Component | How it's resolved |
+|---|---|
+| WSL distro | `MCP_WSL_DISTRO` env var → `WSL_DISTRO_NAME` (set automatically inside WSL) → first dir under `\\wsl.localhost\` → `Ubuntu` fallback |
+| WSL username | `MCP_WSL_USER` env var → first dir under `\\wsl.localhost\<distro>\home\` → `$USER` / `%USERNAME%` fallback |
+| Windows username | `MCP_WINDOWS_USER` env var → first non-system dir under `/mnt/c/Users/` → `%USERNAME%` / `$USER` fallback |
 
-On most setups (same username on both sides) this just works. If your Windows username and WSL username differ — e.g. `John.Doe` on Windows and `john` in WSL — set `MCP_WINDOWS_USER=John.Doe` and `MCP_WSL_USER=john` to make cross-OS sync deterministic.
+On most setups (single distro, same username on both sides) this just works. Set the env vars explicitly when:
 
-For same-OS sync, this isn't an issue — `${USERPROFILE}` / `$HOME` resolve normally.
+- You have **multiple WSL distros** installed (e.g. Ubuntu + Debian + Kali) and the auto-pick chooses wrong:
+  ```bash
+  export MCP_WSL_DISTRO=Debian
+  ```
+- Your **Windows + WSL usernames differ** (e.g. `John.Doe` vs `john`):
+  ```bash
+  export MCP_WINDOWS_USER=John.Doe
+  export MCP_WSL_USER=john
+  ```
+
+For same-OS sync, this isn't an issue — `${USERPROFILE}` / `$HOME` resolve normally and no UNC translation happens.
 
 ### macOS / Linux native (non-WSL) support
 

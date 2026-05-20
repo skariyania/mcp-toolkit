@@ -190,13 +190,38 @@ def current_os() -> str:
     return "windows" if sys.platform == "win32" else "wsl"
 
 
+def _detect_wsl_distro() -> str:
+    r"""Detect the WSL distribution name (e.g. 'Ubuntu', 'Debian', 'kali-linux').
+
+    Resolution order:
+      1) MCP_WSL_DISTRO env var if set
+      2) WSL_DISTRO_NAME (set automatically inside WSL)
+      3) First subdirectory under \\wsl.localhost\ when probing from Windows
+      4) 'Ubuntu' as last-resort fallback
+    """
+    env = os.environ.get("MCP_WSL_DISTRO")
+    if env:
+        return env
+    in_wsl = os.environ.get("WSL_DISTRO_NAME")
+    if in_wsl:
+        return in_wsl
+    if sys.platform == "win32":
+        wsl_root = Path("\\\\wsl.localhost")
+        if wsl_root.is_dir():
+            kids = [c.name for c in wsl_root.iterdir() if c.is_dir() and not c.name.startswith("$")]
+            if kids:
+                return kids[0]
+    return "Ubuntu"
+
+
 def _detect_wsl_user() -> str:
-    r"""Best-effort: pick a username under \\wsl.localhost\Ubuntu\home\.
+    r"""Best-effort: pick a username under \\wsl.localhost\<distro>\home\.
     Honors MCP_WSL_USER env var first."""
     env = os.environ.get("MCP_WSL_USER")
     if env:
         return env
-    unc = Path("\\\\wsl.localhost\\Ubuntu\\home")
+    distro = _detect_wsl_distro()
+    unc = Path(f"\\\\wsl.localhost\\{distro}\\home")
     if unc.is_dir():
         kids = [c.name for c in unc.iterdir() if c.is_dir()]
         if kids:
@@ -223,8 +248,9 @@ def default_source_for(os_kind: str) -> str:
         if current_os() == "wsl":
             return os.path.expanduser("~/.codeium/windsurf/mcp_config.json")
         # cross from Windows: UNC
+        distro = _detect_wsl_distro()
         user = _detect_wsl_user()
-        return f"\\\\wsl.localhost\\Ubuntu\\home\\{user}\\.codeium\\windsurf\\mcp_config.json"
+        return f"\\\\wsl.localhost\\{distro}\\home\\{user}\\.codeium\\windsurf\\mcp_config.json"
     # windows
     if current_os() == "windows":
         return os.path.expandvars(r"%USERPROFILE%\.config\mcp\servers.json")
