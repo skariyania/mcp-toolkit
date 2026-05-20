@@ -115,10 +115,11 @@ def expand_for_os(template: str, target_os: str) -> Path:
     """Expand ${USERPROFILE}/${APPDATA}/${HOME} for the *target* OS.
 
     When running on the same OS as the target, env vars work directly.
-    When crossing (e.g. WSL -> Windows), we synthesize the path from
-    well-known conventions for *Sahil's* setup. This is intentional: this
-    tool isn't fully generic — it's a personal tool, paths reflect
-    `personal-tools` conventions.
+    When crossing (e.g. WSL -> Windows), we synthesize the path using:
+      1) MCP_WINDOWS_USER / MCP_WSL_USER if set,
+      2) the first user dir found under \\wsl.localhost\Ubuntu\home or
+         /mnt/c/Users,
+      3) $USER / %USERNAME% as a last-resort fallback.
     """
     if target_os == "windows":
         userprofile = os.environ.get("USERPROFILE")

@@ -6,8 +6,6 @@
 
 Stdlib-only Python. No `pip install`. Cross-platform.
 
-> **Note (Sahil):** the old path `~/dev/personal/tools/mcp/` now resolves into this repo via a Windows junction / WSL symlink — old commands keep working.
-
 ---
 
 ## Why this exists
