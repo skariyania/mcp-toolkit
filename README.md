@@ -85,6 +85,10 @@ uv run mcp.py schedule
 
 # Where does everything live?
 uv run mcp.py topology
+
+# Fix a broken master JSON (missing/trailing comma) — dry-run, then --apply
+uv run mcp.py repair ~/.config/mcp/servers.json
+uv run mcp.py repair ~/.config/mcp/servers.json --apply
 ```
 
 ### 3) Drop a daily auto-sync into cron / Task Scheduler
@@ -355,6 +359,36 @@ uv run mcp.py topology
 
 Prints the complete cross-OS map of master configs, secrets, wrappers, reports, and where each tool reads its config from.
 
+### Repair — "my master JSON is broken, fix it"
+
+```bash
+# Dry-run: show error context + suggested fix + diff
+uv run mcp.py repair ~/.config/mcp/servers.json
+
+# Apply the fix in place (hardlink-safe, backs up to .bak.<ts> first)
+uv run mcp.py repair ~/.config/mcp/servers.json --apply
+```
+
+Auto-fixes the two JSON syntax errors that bite this setup most often:
+
+- **Missing comma** between two sibling values inside an object or array
+  (the classic copy-paste / hand-edit hazard).
+- **Trailing comma** before `}` or `]` (legal in JSONC, illegal in strict JSON).
+
+For anything else — unterminated strings, bad escapes, malformed numbers, mismatched braces — it **refuses to guess** and tells you to fix manually. There is no `--force` mode for unsafe repairs.
+
+Hardlink-safe by design: writes use `open(mode='r+') + seek(0) + truncate() + write()` so the file's inode is preserved and the NTFS hardlink chain (`servers.json` ↔ `mcp_config.json` ↔ `mcp.json`) survives. The implementation asserts `st_nlink` is unchanged across every write — any future regression that breaks the chain raises `RuntimeError`.
+
+`mcp_doctor.py` references this command in its parse-error suggestion text, so the typical recovery flow is: doctor surfaces the parse error → copy the suggested `repair` command → run it dry-run → confirm → `--apply`.
+
+#### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | File already parses (no work needed), or `--apply` succeeded. |
+| 1 | Repair available but not applied (dry-run output). |
+| 2 | No safe repair available (manual fix required), or `--apply` failed. |
+
 ---
 
 ## Configuration (env vars)
@@ -560,11 +594,13 @@ Same fix as above. To prevent it: either add the server to the master, or omit t
 
 ```
 mcp-toolkit/
-├── mcp.py                  # unified entry point (interactive + subcommands)
+├── mcp.py                  # unified entry point (interactive + subcommands incl. `repair`)
 ├── mcp_doctor.py           # diagnose
 ├── mcp_sync.py             # translate-and-distribute master config
 ├── mcp_sync_daemon.py      # scheduled wrapper for sync
+├── mcp_memory_sync.py      # mirror Memory MCP graph across OSes
 ├── README.md               # this file
+├── CHANGELOG.md            # release history (Keep a Changelog format)
 ├── LICENSE                 # MIT
 └── .gitignore
 ```
@@ -591,6 +627,10 @@ That's it. There is no install step. Stdlib-only Python means nothing to compile
 - `--save-as <name>` to bookmark a sync recipe (source + targets + flags) for one-flag invocation.
 
 ---
+
+## Release history
+
+See [CHANGELOG.md](./CHANGELOG.md) — Keep a Changelog format, SemVer.
 
 ## License
 
