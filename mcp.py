@@ -35,7 +35,9 @@ The unified entry point is stdlib-only and works identically on Windows + WSL.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import io
+import json
 import os
 import platform
 import shlex
@@ -53,6 +55,131 @@ DOCTOR  = THIS_DIR / "mcp_doctor.py"
 SYNC    = THIS_DIR / "mcp_sync.py"
 DAEMON  = THIS_DIR / "mcp_sync_daemon.py"
 MEMSYNC = THIS_DIR / "mcp_memory_sync.py"
+
+
+# ============================================================================
+# Shared helpers: hardlink-safe write + conservative JSON auto-repair
+# ============================================================================
+#
+# These live in mcp.py rather than a separate module so the repo keeps its
+# "one job per script + a front door" shape.  Both are pure functions; no CLI
+# flow lives here.  Anyone (this file, mcp_doctor.py, future tools) can
+# import them via `from mcp import write_in_place, try_repair_simple_json`.
+
+def write_in_place(path: Path, text: str, *, encoding: str = "utf-8") -> Path | None:
+    """Write `text` to `path`, preserving the file's inode (and therefore any
+    hardlinks pointing at it).
+
+    Method: open in mode 'r+' (existing file) or 'w' (new file), seek(0),
+    truncate(), write(), flush(), fsync().  This is open-truncate-write in
+    place -- NEVER save-by-rename.
+
+    Before any mutation of an existing file, writes a `.bak.<ts>` next to it.
+    Returns the backup path (or None if the file didn't exist).
+
+    Asserts that `st_nlink` is unchanged across the write; raises RuntimeError
+    if not.  This catches future regressions that would silently break the
+    NTFS hardlink chain that [[MCP Setup]] depends on.
+    """
+    path = Path(path)
+    bak: Path | None = None
+    nlink_before: int | None = None
+    if path.exists():
+        nlink_before = os.stat(path).st_nlink
+        ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        bak = path.with_name(path.name + f".bak.{ts}")
+        bak.write_bytes(path.read_bytes())
+        # Open existing file for read+write so we can truncate in place.
+        with open(path, "r+", encoding=encoding, newline="") as f:
+            f.seek(0)
+            f.truncate()
+            f.write(text)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except (OSError, AttributeError):
+                pass  # fsync not available on all platforms / for all fds
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding=encoding, newline="") as f:
+            f.write(text)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except (OSError, AttributeError):
+                pass
+    if nlink_before is not None:
+        nlink_after = os.stat(path).st_nlink
+        if nlink_after != nlink_before:
+            raise RuntimeError(
+                f"write_in_place: hardlink count changed "
+                f"({nlink_before} -> {nlink_after}) for {path}. "
+                f"The hardlink chain has been broken. Backup at: {bak}"
+            )
+    return bak
+
+
+def try_repair_simple_json(text: str, *, max_repairs: int = 50) -> tuple[str | None, str]:
+    """Attempt safe, conservative repair on common JSON syntax errors.
+
+    Handles only:
+      - missing comma between two sibling values inside objects/arrays
+        (boundaries: }<ws>" / ]<ws>" / }<ws>{ / ]<ws>[ / "<ws>" / ...)
+      - trailing comma: ,<ws>} / ,<ws>]
+
+    Anything else: returns (None, "no safe repair available -- manual fix required").
+    Never guesses.
+
+    Returns (repaired_text, summary) on success.  Repairs are applied
+    one-at-a-time and the result is re-parsed after each, up to `max_repairs`
+    rounds, to handle multiple similar errors in one file.
+    """
+    if not isinstance(text, str):
+        return None, "input is not a string"
+
+    summary: list[str] = []
+    current = text
+    for _ in range(max_repairs):
+        try:
+            json.loads(current)
+            if summary:
+                return current, "; ".join(summary)
+            return current, "already valid"
+        except json.JSONDecodeError as e:
+            pos = int(e.pos)
+            msg = e.msg or ""
+            n = len(current)
+
+            # Walk back from pos to the previous non-whitespace char.
+            j = pos - 1
+            while j >= 0 and current[j] in " \t\r\n":
+                j -= 1
+            prev = current[j] if j >= 0 else ""
+
+            # Case A: missing comma between two siblings.
+            # Trigger: prev is a value-closer ('}', ']', '"', or a digit, or 'e', 'l' from true/false/null)
+            # AND the char at pos is a value-opener ('"', '{', '[', digit, sign, t, f, n).
+            here = current[pos] if pos < n else ""
+            value_closer = prev in ("}", "]", '"') or prev.isdigit() or prev in ("e", "l")
+            value_opener = (here == '"' or here in "{[" or here.isdigit()
+                            or here in "-+tfn")
+            if (value_closer and value_opener
+                    and ("delimiter" in msg or "Expecting" in msg)):
+                current = current[: j + 1] + "," + current[j + 1:]
+                summary.append(f"inserted ',' between sibling values at char {j+1}")
+                continue
+
+            # Case B: trailing comma before a closer.
+            # Trigger: char at pos is '}' or ']' AND the previous non-ws char is ','.
+            if (here in ("}", "]") and prev == ","):
+                # Remove the trailing comma at position j.
+                current = current[:j] + current[j+1:]
+                summary.append(f"removed trailing comma at char {j}")
+                continue
+
+            return None, ("no safe repair available -- manual fix required "
+                          f"(error at line {e.lineno} col {e.colno}: {msg})")
+    return None, f"giving up after {max_repairs} repair attempts"
 
 
 # ============================================================================
@@ -551,6 +678,79 @@ def cmd_topology() -> int:
 
 
 # ============================================================================
+# Repair flow (auto-fix common JSON syntax errors, hardlink-safe)
+# ============================================================================
+
+def _render_parse_error_context(text: str, lineno: int, colno: int,
+                                msg: str, *, ctx: int = 3) -> str:
+    """Pretty-print the parse error: file window with caret + classification."""
+    lines = text.splitlines()
+    lo = max(1, lineno - ctx)
+    hi = min(len(lines), lineno + ctx)
+    width = len(str(hi))
+    out: list[str] = [f"  line {lineno}, col {colno}: {msg}", ""]
+    for i in range(lo, hi + 1):
+        prefix = f"  {str(i).rjust(width)} | "
+        out.append(prefix + (lines[i - 1] if i - 1 < len(lines) else ""))
+        if i == lineno:
+            out.append(" " * (len(prefix) + max(0, colno - 1)) + "^")
+    return "\n".join(out)
+
+
+def cmd_repair(path_str: str, apply: bool = False) -> int:
+    """Dry-run or --apply a safe auto-repair on a JSON file.
+    Hardlink-safe: uses write_in_place(), preserves NTFS inode + .bak.<ts>.
+
+    Exit codes:
+      0   file already parses (no work needed), or --apply succeeded
+      1   repair available but not applied (dry-run with pending fix)
+      2   no safe repair (manual fix required) or apply failed
+    """
+    import difflib
+    path = Path(path_str).expanduser()
+    section(f"Repair — {path}")
+    if not path.is_file():
+        print(f"  ERROR: not a file: {path}", file=sys.stderr)
+        return 2
+    text = path.read_text(encoding="utf-8")
+    try:
+        json.loads(text)
+        print("  already valid JSON; no repair needed.")
+        return 0
+    except json.JSONDecodeError as e:
+        print(_render_parse_error_context(text, e.lineno, e.colno, e.msg or ""))
+        print()
+    repaired, summary = try_repair_simple_json(text)
+    if repaired is None:
+        print(f"  {summary}")
+        print()
+        print("  No automated repair available. Open the file in an editor and")
+        print("  fix the error manually, then re-run this command to verify.")
+        return 2
+    print(f"  proposed fix: {summary}")
+    print()
+    diff = "".join(difflib.unified_diff(
+        text.splitlines(keepends=True),
+        repaired.splitlines(keepends=True),
+        fromfile=f"{path} (current)", tofile=f"{path} (repaired)", n=3,
+    ))
+    print(diff or "(no textual diff -- check encoding/newlines)")
+    print()
+    if not apply:
+        print("(dry-run -- pass --apply to write the fix in place)")
+        return 1
+    try:
+        bak = write_in_place(path, repaired)
+    except Exception as e:
+        print(f"  apply failed: {e}", file=sys.stderr)
+        return 2
+    if bak:
+        print(f"  backed up original -> {bak}")
+    print(f"  wrote {path}")
+    return 0
+
+
+# ============================================================================
 # Main menu
 # ============================================================================
 
@@ -604,6 +804,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("memory", help="Mirror the Memory MCP knowledge-graph across OSes (safe).")
     sub.add_parser("schedule", help="Show env config + install commands for periodic sync.")
     sub.add_parser("topology", help="Show where MCP files live on Windows + WSL.")
+    s_repair = sub.add_parser("repair",
+                              help="Auto-fix common JSON syntax errors (missing/trailing comma).")
+    s_repair.add_argument("path", help="Path to the JSON file to repair.")
+    s_repair.add_argument("--apply", action="store_true",
+                          help="Write the fix in place (default is dry-run).")
     args = p.parse_args(argv)
 
     if args.cmd is None or args.cmd == "menu":
@@ -618,8 +823,74 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_schedule_interactive()
     if args.cmd == "topology":
         return cmd_topology()
+    if args.cmd == "repair":
+        return cmd_repair(args.path, apply=args.apply)
+    return 0
+
+
+# ============================================================================
+# Self-tests (run via `python mcp.py --self-test`)
+# ============================================================================
+
+def _self_test() -> int:
+    """Inline assertions for write_in_place + try_repair_simple_json (T3-T5)."""
+    import tempfile
+    # T3: write_in_place preserves inode + link count on a hardlinked file.
+    with tempfile.TemporaryDirectory() as td:
+        a = Path(td) / "a.json"
+        b = Path(td) / "b.json"
+        a.write_text('{"v": 1}', encoding="utf-8")
+        os.link(a, b)
+        ino_before = os.stat(a).st_ino
+        nl_before = os.stat(a).st_nlink
+        assert nl_before == 2, f"setup FAIL: link count {nl_before} != 2"
+        bak = write_in_place(a, '{"v": 2, "added": "yes -- longer than before"}')
+        ino_after = os.stat(a).st_ino
+        nl_after = os.stat(a).st_nlink
+        assert ino_before == ino_after, f"T3 FAIL: inode changed {ino_before} -> {ino_after}"
+        assert nl_before == nl_after, f"T3 FAIL: link count {nl_before} -> {nl_after}"
+        assert b.read_text(encoding="utf-8") == '{"v": 2, "added": "yes -- longer than before"}', \
+            "T3 FAIL: hardlinked sibling didn't see the new content"
+        assert bak is not None and bak.exists(), "T3 FAIL: .bak.<ts> not created"
+        assert bak.read_text(encoding="utf-8") == '{"v": 1}', "T3 FAIL: backup content wrong"
+        print("T3 PASS  write_in_place preserves inode + link count + creates .bak")
+
+    # T4: try_repair_simple_json fixes the canonical missing-comma case
+    # (the actual bug we hit in this session: missing comma between two
+    # object members).
+    broken_missing_comma = '{\n  "a": 1\n  "b": 2\n}\n'
+    fixed, summary = try_repair_simple_json(broken_missing_comma)
+    assert fixed is not None, f"T4 FAIL: repair returned None for missing-comma; summary={summary}"
+    obj = json.loads(fixed)
+    assert obj == {"a": 1, "b": 2}, f"T4 FAIL: repaired parsed wrong: {obj}"
+    assert "inserted ','" in summary, f"T4 FAIL: unexpected summary: {summary}"
+    print(f"T4 PASS  missing-comma repair works ({summary})")
+
+    # T4b: trailing comma repair.
+    broken_trailing = '{\n  "a": 1,\n  "b": 2,\n}\n'
+    fixed, summary = try_repair_simple_json(broken_trailing)
+    assert fixed is not None, f"T4b FAIL: trailing-comma not repaired; {summary}"
+    assert json.loads(fixed) == {"a": 1, "b": 2}, f"T4b FAIL: wrong content"
+    assert "removed trailing comma" in summary, f"T4b FAIL: unexpected summary: {summary}"
+    print(f"T4b PASS trailing-comma repair works ({summary})")
+
+    # T5: try_repair_simple_json refuses to guess on truly invalid input.
+    truly_bad = '{"a": "unterminated string'
+    fixed, summary = try_repair_simple_json(truly_bad)
+    assert fixed is None, f"T5 FAIL: repaired something it shouldn't have; got: {fixed!r}"
+    assert "no safe repair" in summary, f"T5 FAIL: unexpected summary: {summary}"
+    print(f"T5 PASS  unfixable input returns (None, ...) -- no guessing")
+
+    # T5b: garbage input (not even JSON-shaped) -> refuse cleanly.
+    fixed, summary = try_repair_simple_json("hello world")
+    assert fixed is None, f"T5b FAIL: repaired non-JSON: {fixed!r}"
+    print(f"T5b PASS non-JSON input returns (None, ...)")
+
+    print("\nAll self-tests passed.")
     return 0
 
 
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        sys.exit(_self_test())
     sys.exit(main())

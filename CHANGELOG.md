@@ -27,6 +27,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - `mcp_memory_sync.py --self-test`: inline assertions for the direction-
   accurate output (T1, T2, T2b, T2c). Run via `uv run mcp_memory_sync.py
   --self-test`. No new dependencies, no `tests/` directory.
+- `mcp.py repair <path>` subcommand: dry-run / `--apply` conservative
+  auto-fix for common JSON syntax errors (missing comma between sibling
+  values, trailing comma before `}` / `]`). Shows source-window context
+  with a caret on the failing column, classification, and a unified diff
+  before writing. Refuses to guess on anything else.
+- `mcp.py` internal helpers (also re-importable):
+    - `write_in_place(path, text)` — open-truncate-write in place
+      (mode `r+` for existing, `w` for new), creates `.bak.<ts>`
+      before mutation, asserts `st_nlink` is unchanged across the write.
+      Catches future regressions that would silently break the NTFS
+      hardlink chain that the master MCP config depends on.
+    - `try_repair_simple_json(text)` — pure function returning
+      `(repaired_text, summary)` or `(None, reason)`; never guesses.
+- `mcp.py --self-test`: inline assertions for `write_in_place` and
+  `try_repair_simple_json` (T3, T4, T4b, T5, T5b). Includes hardlink
+  preservation verification on a tmpfs file with link count 2.
 
 ## [1.1.0] - 2026-05-21
 
