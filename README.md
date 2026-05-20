@@ -442,6 +442,7 @@ Same fix as above. To prevent it: either add the server to the master, or omit t
 ## Conventions used by this toolkit
 
 - **Stdlib only.** No `pip install`, no `requirements.txt`, no `pyproject.toml`. Each script has a PEP 723 header so `uv run <script>.py` works out of the box (with no deps to actually fetch — keeps `uv run` fast and consistent across machines).
+- **Pre-publish leak scan.** A pre-push hook runs a layered grep (custom patterns) + `gitleaks` against every push. Any contributor running the scanner (or `git push` with the hook installed) gets a non-zero exit if the diff or commit messages match an org/identity/secret pattern. Configure patterns under `~/.local/share/git-leak-scan/`. (External scanner — not bundled in this repo to avoid duplication.)
 - **Dry-run by default.** Every destructive action is preceded by a diff and a `[y/N]` prompt with `N` as default.
 - **Backup before every write.** No exceptions.
 - **Skip > silently break.** When in doubt, `mcp_sync.py` skips with a reason rather than emitting config the target can't actually run.
