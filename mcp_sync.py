@@ -38,7 +38,7 @@ USAGE
                        --target-os windows --targets windsurf --apply
 
     # Reverse: Windows master -> WSL Windsurf
-    uv run mcp_sync.py --source C:\\Users\\Sahil.Kariyania\\.config\\mcp\\servers.json \\
+    uv run mcp_sync.py --source %USERPROFILE%\\.config\\mcp\\servers.json \\
                        --target-os wsl --targets windsurf,vscode --apply
 
     # Custom target file
@@ -136,7 +136,7 @@ def expand_for_os(template: str, target_os: str) -> Path:
                     if (c / ".codeium").is_dir() or (c / ".config").is_dir():
                         user_dir = c; break
                 if user_dir is None:
-                    user_dir = candidates[0] if candidates else mnt_users / "Sahil.Kariyania"
+                    user_dir = candidates[0] if candidates else mnt_users / os.environ.get("USERNAME", "user")
                 userprofile = str(user_dir)
                 appdata = str(user_dir / "AppData" / "Roaming")
             else:
@@ -161,7 +161,7 @@ def expand_for_os(template: str, target_os: str) -> Path:
             if kids:
                 user_dir = kids[0]
         if user_dir is None:
-            user_dir = Path("\\\\wsl.localhost\\Ubuntu\\home\\skariyania")
+            user_dir = Path("\\\\wsl.localhost\\Ubuntu\\home") / (os.environ.get("USER") or os.environ.get("USERNAME") or "user")
         home = str(user_dir).replace("/", "\\")
         return Path(template.replace("${HOME}", home))
 

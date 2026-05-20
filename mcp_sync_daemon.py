@@ -55,8 +55,8 @@ SCHEDULING
             "uv run \"%USERPROFILE%\\dev\\personal\\tools\\mcp\\mcp_sync_daemon.py\""
 
     WSL cron (`crontab -e`):
-        0 9 * * *  /home/skariyania/.local/bin/uv run \\
-                   /home/skariyania/dev/personal/tools/mcp/mcp_sync_daemon.py
+        0 9 * * *  /home/$USER/.local/bin/uv run \\
+                   /home/$USER/dev/personal/mcp-toolkit/mcp_sync_daemon.py
 
     Either way the script handles its own debouncing — running it more often
     than MCP_SYNC_FREQUENCY just causes silent skips.

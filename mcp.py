@@ -190,17 +190,47 @@ def current_os() -> str:
     return "windows" if sys.platform == "win32" else "wsl"
 
 
+def _detect_wsl_user() -> str:
+    r"""Best-effort: pick a username under \\wsl.localhost\Ubuntu\home\.
+    Honors MCP_WSL_USER env var first."""
+    env = os.environ.get("MCP_WSL_USER")
+    if env:
+        return env
+    unc = Path("\\\\wsl.localhost\\Ubuntu\\home")
+    if unc.is_dir():
+        kids = [c.name for c in unc.iterdir() if c.is_dir()]
+        if kids:
+            return kids[0]
+    return os.environ.get("USER", os.environ.get("USERNAME", "user"))
+
+
+def _detect_windows_user() -> str:
+    """Best-effort: pick a username under /mnt/c/Users/.
+    Honors MCP_WINDOWS_USER env var first."""
+    env = os.environ.get("MCP_WINDOWS_USER")
+    if env:
+        return env
+    mnt = Path("/mnt/c/Users")
+    if mnt.is_dir():
+        kids = [c.name for c in mnt.iterdir() if c.is_dir() and c.name not in ("Public", "Default", "All Users", "Default User")]
+        if kids:
+            return kids[0]
+    return os.environ.get("USERNAME", os.environ.get("USER", "user"))
+
+
 def default_source_for(os_kind: str) -> str:
     if os_kind == "wsl":
         if current_os() == "wsl":
             return os.path.expanduser("~/.codeium/windsurf/mcp_config.json")
         # cross from Windows: UNC
-        return "\\\\wsl.localhost\\Ubuntu\\home\\skariyania\\.codeium\\windsurf\\mcp_config.json"
+        user = _detect_wsl_user()
+        return f"\\\\wsl.localhost\\Ubuntu\\home\\{user}\\.codeium\\windsurf\\mcp_config.json"
     # windows
     if current_os() == "windows":
         return os.path.expandvars(r"%USERPROFILE%\.config\mcp\servers.json")
     # cross from WSL: /mnt/c
-    return "/mnt/c/Users/Sahil.Kariyania/.config/mcp/servers.json"
+    user = _detect_windows_user()
+    return f"/mnt/c/Users/{user}/.config/mcp/servers.json"
 
 
 # ============================================================================
@@ -407,11 +437,11 @@ def cmd_topology() -> int:
         ("Windows Devin",          "%APPDATA%\\devin\\config.json (merged)"),
         ("Windows reports/state",  "%LOCALAPPDATA%\\mcp-sync\\"),
         (".", ""),
-        ("WSL master config",      "/home/skariyania/.codeium/windsurf/mcp_config.json"),
-        ("WSL secrets",            "/home/skariyania/.codeium/windsurf/secrets.env (chmod 600)"),
-        ("WSL wrappers",           "/home/skariyania/.codeium/windsurf/wrappers/"),
-        ("WSL VS Code",            "/home/skariyania/.config/Code/User/mcp.json"),
-        ("WSL Devin",              "/home/skariyania/.config/devin/config.json"),
+        ("WSL master config",      "~/.codeium/windsurf/mcp_config.json"),
+        ("WSL secrets",            "~/.codeium/windsurf/secrets.env (chmod 600)"),
+        ("WSL wrappers",           "~/.codeium/windsurf/wrappers/"),
+        ("WSL VS Code",            "~/.config/Code/User/mcp.json"),
+        ("WSL Devin",              "~/.config/devin/config.json"),
         ("WSL reports/state",      "~/.local/share/mcp-sync/  +  ~/.local/state/mcp-sync/"),
         (".", ""),
         ("Skills (WSL workspace)", "~/dev/github.com/.windsurf/{rules,workflows}/mcp-*.md"),
