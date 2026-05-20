@@ -443,10 +443,6 @@ def cmd_topology() -> int:
         ("WSL VS Code",            "~/.config/Code/User/mcp.json"),
         ("WSL Devin",              "~/.config/devin/config.json"),
         ("WSL reports/state",      "~/.local/share/mcp-sync/  +  ~/.local/state/mcp-sync/"),
-        (".", ""),
-        ("Skills (WSL workspace)", "~/dev/github.com/.windsurf/{rules,workflows}/mcp-*.md"),
-        ("Reference doc (Obsidian)", "@work/MCP Setup.md"),
-        ("Memory entity",          "mcp-topology  (memory MCP graph; seed at ~/.codeium/windsurf/mcp-topology-seed.json)"),
     ]
     for k, v in locations:
         if k == ".":
