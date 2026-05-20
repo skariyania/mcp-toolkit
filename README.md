@@ -182,12 +182,13 @@ Mirror missing secrets from source secrets file to target?
   Dry-run preview (no files will be modified)
 ===============================================
 Parsed 14 servers (5 disabled).
-Skipped 5 servers:
-  - postgresql: unsupported wrapper: uses mcp-tool-rename.py shim (POSIX-only)
-  - postgresql-olive:            ...same reason
-  - postgresql-olive-playlist:   ...same reason
-  - postgresql-vodka:            ...same reason
-  - postgresql-whiskey:          ...same reason
+Skipped 5 servers (Postgres MCPs using the mcp-tool-rename.py shim — POSIX-only;
+identifiers redacted in this excerpt):
+  - postgresql:                ...primary local
+  - postgresql-<env-A>:        ...same reason
+  - postgresql-<env-A>-...:    ...same reason
+  - postgresql-<env-B>:        ...same reason
+  - postgresql-<env-C>:        ...same reason
 
 Secrets check: 2 key(s) needed in target secrets but missing:
   - GITHUB_PERSONAL_ACCESS_TOKEN  (source has it: yes)
