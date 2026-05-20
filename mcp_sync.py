@@ -116,10 +116,10 @@ def expand_for_os(template: str, target_os: str) -> Path:
 
     When running on the same OS as the target, env vars work directly.
     When crossing (e.g. WSL -> Windows), we synthesize the path using:
-      1) MCP_WINDOWS_USER / MCP_WSL_USER if set,
-      2) the first user dir found under \\wsl.localhost\Ubuntu\home or
-         /mnt/c/Users,
-      3) $USER / %USERNAME% as a last-resort fallback.
+      1) MCP_WSL_DISTRO / MCP_WSL_USER / MCP_WINDOWS_USER env vars if set,
+      2) WSL_DISTRO_NAME (set automatically inside WSL) for the distro,
+      3) the first dir found under \\wsl.localhost\ or /mnt/c/Users,
+      4) $USER / %USERNAME% / 'Ubuntu' as last-resort fallbacks.
     """
     if target_os == "windows":
         userprofile = os.environ.get("USERPROFILE")
@@ -154,17 +154,35 @@ def expand_for_os(template: str, target_os: str) -> Path:
         home_env = os.environ.get("HOME")
         if running_on_posix and home_env:
             return Path(template.replace("${HOME}", home_env))
-        # Cross from Windows -> WSL: use UNC.
-        unc_root = Path("\\\\wsl.localhost\\Ubuntu\\home")
+        # Cross from Windows -> WSL: use UNC. Detect the distro dynamically.
+        distro = (os.environ.get("MCP_WSL_DISTRO")
+                  or os.environ.get("WSL_DISTRO_NAME")
+                  or _first_wsl_distro_or("Ubuntu"))
+        unc_root = Path(f"\\\\wsl.localhost\\{distro}\\home")
         user_dir = None
         if unc_root.is_dir():
             kids = list(unc_root.iterdir())
             if kids:
                 user_dir = kids[0]
         if user_dir is None:
-            user_dir = Path("\\\\wsl.localhost\\Ubuntu\\home") / (os.environ.get("USER") or os.environ.get("USERNAME") or "user")
+            fallback_user = (os.environ.get("MCP_WSL_USER")
+                             or os.environ.get("USER")
+                             or os.environ.get("USERNAME")
+                             or "user")
+            user_dir = Path(f"\\\\wsl.localhost\\{distro}\\home") / fallback_user
         home = str(user_dir).replace("/", "\\")
         return Path(template.replace("${HOME}", home))
+
+
+def _first_wsl_distro_or(default: str) -> str:
+    """List \\wsl.localhost\ for installed distros, return the first or default."""
+    if sys.platform == "win32":
+        root = Path("\\\\wsl.localhost")
+        if root.is_dir():
+            kids = [c.name for c in root.iterdir() if c.is_dir() and not c.name.startswith("$")]
+            if kids:
+                return kids[0]
+    return default
 
 
 def secrets_path_for(target_os: str) -> Path:
@@ -347,7 +365,9 @@ def _read_wrapper(wrapper_path: str, source_os: str) -> Path | None:
         return p
     # If source is WSL but we're on Windows, translate POSIX → UNC.
     if source_os == "wsl" and sys.platform == "win32" and wrapper_path.startswith("/"):
-        unc = Path("\\\\wsl.localhost\\Ubuntu") / Path(*Path(wrapper_path).parts[1:])
+        distro = (os.environ.get("MCP_WSL_DISTRO")
+                  or _first_wsl_distro_or("Ubuntu"))
+        unc = Path(f"\\\\wsl.localhost\\{distro}") / Path(*Path(wrapper_path).parts[1:])
         if unc.is_file():
             return unc
     # If source is Windows but we're on Linux/WSL, translate Windows path.
