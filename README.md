@@ -139,6 +139,88 @@ Steps:
 uv run mcp.py sync
 ```
 
+#### Example session
+
+```text
+=====================================================
+  Sync — translate-and-distribute master MCP config
+=====================================================
+This walks you through:
+  1) Pick the SOURCE (which config is the master).
+  2) Pick the TARGET OS + targets to update.
+  3) Decide on secrets mirroring.
+  4) See a DRY-RUN diff of every change.
+  5) Confirm before any file is written.
+
+Sync direction:
+  1) * WSL master  → Windows tools  — WSL is source-of-truth
+  2)   Windows master → WSL tools  — Windows is source-of-truth
+  3)   Same OS (sync within current OS)
+  4)   Custom source path
+  Choose [1-4, default 1]: 1
+
+Source file [\\wsl.localhost\Ubuntu\home\<user>\.codeium\windsurf\mcp_config.json]:
+  source_os=wsl   target_os=windows
+
+Targets to update:
+  [x] 1) windsurf   — Windsurf IDE config
+  [x] 2) lmstudio   — LM Studio MCP config
+  [x] 3) vscode     — VS Code (schema rewrite)
+  [x] 4) devin      — Devin (merges into existing config.json)
+  [ ] 5) master     — Canonical master file
+  Toggle (e.g. '1,3' to flip), 'a'=all, 'n'=none, Enter=continue: 3
+  ...vscode flipped off, Enter to continue...
+
+  selected targets: windsurf, lmstudio, devin
+
+Mirror missing secrets from source secrets file to target?
+(plaintext tokens cross the OS boundary) [y/N]: N
+
+===============================================
+  Dry-run preview (no files will be modified)
+===============================================
+Parsed 14 servers (5 disabled).
+Skipped 5 servers:
+  - postgresql: unsupported wrapper: uses mcp-tool-rename.py shim (POSIX-only)
+  - postgresql-olive:            ...same reason
+  - postgresql-olive-playlist:   ...same reason
+  - postgresql-vodka:            ...same reason
+  - postgresql-whiskey:          ...same reason
+
+Secrets check: 2 key(s) needed in target secrets but missing:
+  - GITHUB_PERSONAL_ACCESS_TOKEN  (source has it: yes)
+  - HARNESS_API_KEY               (source has it: yes)
+
+  Pass --mirror-secrets to copy these from source -> target (with consent).
+
+--- Target: windsurf -> C:\Users\<user>\.codeium\windsurf\mcp_config.json
+@@ -1,37 +1,271 @@
+ {
+   "mcpServers": {
++    "fetch":             { "command": "uvx", ... },
++    "filesystem":        { "command": "npx", ... },
++    "github-mcp-server": { "command": "docker",
++                           "args": ["run","--env-file",
++                                    "C:\\Users\\<user>\\.config\\mcp\\.env", ...] },
++    "harness":           { ..., "disabled": true },
++    "mcp-atlassian":     { "command": "docker",
++                           "args": ["run","--env-file", ... ] },
+   ...full diff continues — truncated here for the README,
+      you'll see all of it in your terminal
+ }
+
+(dry-run exit code: 3)
+
+====================
+  Confirm
+====================
+Above is the DRY-RUN. The following will happen on apply:
+  - 3 target(s) will be backed up to .bak.<timestamp> then overwritten.
+
+Apply these changes now? [y/N]: N
+Cancelled. No files modified.
+```
+
 Walks you through:
 1. **Direction** — WSL master → Windows tools, or Windows master → WSL tools, or same-OS, or custom.
 2. **Source path** — pre-filled with the right default for the chosen direction.
