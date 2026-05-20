@@ -103,6 +103,53 @@ def detect_configs() -> list[tuple[str, Path]]:
     return [(label, p) for label, p in _candidates() if p.is_file()]
 
 
+def _print_parse_error(path: Path, e: json.JSONDecodeError) -> None:
+    """Print a JSON parse error with source-window context + caret +
+    classification + suggested fix command.  Replaces the previous bare
+    `Expecting ',' delimiter: line X col Y` one-liner that gave the user
+    no way to know what to actually do next."""
+    text = ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    lines = text.splitlines()
+    lineno = int(e.lineno)
+    colno = int(e.colno)
+    msg = e.msg or ""
+    ctx = 3
+    lo = max(1, lineno - ctx)
+    hi = min(len(lines), lineno + ctx)
+    width = len(str(hi)) if hi else 1
+    print(f"mcp-doctor: failed to parse {path}", file=sys.stderr)
+    print(f"  line {lineno}, col {colno}: {msg}", file=sys.stderr)
+    print("", file=sys.stderr)
+    for i in range(lo, hi + 1):
+        prefix = f"  {str(i).rjust(width)} | "
+        line_content = lines[i - 1] if i - 1 < len(lines) else ""
+        print(prefix + line_content, file=sys.stderr)
+        if i == lineno:
+            print(" " * (len(prefix) + max(0, colno - 1)) + "^", file=sys.stderr)
+    print("", file=sys.stderr)
+    # Classify by attempting a conservative repair (pure function, no side
+    # effects).  If it would succeed, point at `mcp.py repair`.
+    try:
+        from mcp import try_repair_simple_json  # sibling script
+        repaired, summary = try_repair_simple_json(text)
+    except Exception:
+        repaired, summary = None, ""
+    if repaired is not None:
+        print(f"  classification: looks repairable ({summary.split(';')[0]})", file=sys.stderr)
+        print(f"  suggested fix: uv run mcp.py repair \"{path}\"", file=sys.stderr)
+        print( "                 (dry-run first; add --apply to write in place)",
+              file=sys.stderr)
+    else:
+        print( "  classification: no safe automated repair available", file=sys.stderr)
+        print( "  next step: open the file in an editor and fix manually,", file=sys.stderr)
+        print(f"             then re-run `uv run mcp_doctor.py --config {path}`",
+              file=sys.stderr)
+
+
 def load_servers(path: Path) -> dict[str, dict]:
     """Read a config file and return {server_name: server_def}.
 
@@ -482,6 +529,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         servers = load_servers(cfg_path)
+    except json.JSONDecodeError as e:
+        _print_parse_error(cfg_path, e)
+        return 2
     except Exception as e:
         print(f"mcp-doctor: failed to parse {cfg_path}: {e}", file=sys.stderr)
         return 2

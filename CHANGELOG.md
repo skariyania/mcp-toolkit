@@ -43,6 +43,18 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 - `mcp.py --self-test`: inline assertions for `write_in_place` and
   `try_repair_simple_json` (T3, T4, T4b, T5, T5b). Includes hardlink
   preservation verification on a tmpfs file with link count 2.
+- `mcp_doctor.py`: when the config fails to parse, the error now shows
+  a source-window with `^` caret on the failing column, a classification
+  (whether `mcp.py repair` can fix it), and the exact suggested fix
+  command. Replaces the previous bare `Expecting ',' delimiter:
+  line X column Y` one-liner that gave no actionable next step.
+
+### Changed
+- `mcp.py`'s Windows UTF-8 stdout/stderr wrap is now idempotent: it
+  checks whether `sys.std*.encoding` is already utf-8 before re-wrapping,
+  so importing `mcp` from a sibling script that did its own wrap doesn't
+  close the existing wrapper's buffer (caused `lost sys.stderr` /
+  `I/O operation on closed file` at exit).
 
 ## [1.1.0] - 2026-05-21
 

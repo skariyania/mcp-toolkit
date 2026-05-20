@@ -46,9 +46,14 @@ import sys
 from pathlib import Path
 
 # --- UTF-8 stdout fix for Windows ---
+# Idempotent: only wrap if not already utf-8.  Importing this module from
+# another script (which may have already done its own wrap) must not close
+# the existing wrapper's buffer.
 if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    if getattr(sys.stdout, "encoding", "") .lower().replace("-", "") != "utf8":
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if getattr(sys.stderr, "encoding", "") .lower().replace("-", "") != "utf8":
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 THIS_DIR = Path(__file__).resolve().parent
 DOCTOR  = THIS_DIR / "mcp_doctor.py"
