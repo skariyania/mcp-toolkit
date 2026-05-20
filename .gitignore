@@ -1,0 +1,29 @@
+# Backups created by mcp_sync.py
+*.bak
+*.bak.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.python-version
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Reports / state (these live outside the repo by default,
+# but ignore them if a user redirects MCP_SYNC_REPORT_DIR here)
+reports/
+state/
+*.log
+
+# Secrets — never, under any circumstances, commit these
+secrets.env
+.env
+*.pem
+*.key
