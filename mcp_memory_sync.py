@@ -219,14 +219,18 @@ def discover_sides(
     def _build(side_name: str, override: str | None) -> Side | None:
         cfg = _expand_for_os(WINDSURF_CFG_TEMPLATE[side_name], side_name)
         if override:
-            declared = override
+            # Overrides are paths this process can open directly -- do NOT
+            # run them through the cross-OS translator (which assumes the
+            # input is in the side's native syntax).
             notes.append(f"  {side_name}: overridden via --{side_name}-file")
+            declared = override
+            local = Path(os.path.expandvars(os.path.expanduser(override)))
         else:
             declared = _read_memory_file_path_from_config(cfg) or ""
             if not declared:
                 notes.append(f"  {side_name}: NO MEMORY_FILE_PATH in {cfg}")
                 return None
-        local = _translate_native_path_to_local(declared, side_name)
+            local = _translate_native_path_to_local(declared, side_name)
         return Side(name=side_name, cfg_path=cfg, declared_path=declared, file=local)
 
     win = _build("windows", windows_file)
@@ -466,19 +470,51 @@ def run(
         print(f"ERROR: unknown direction: {direction}", file=sys.stderr)
         return 2
 
-    print("Plan:")
-    if plan_for_win is not None:
-        print(f"  Windows will gain  +{gains_win.entities_added_from_other} entities, "
+    # Overlap stats (entities only -- relations are deduped by triple).
+    win_ent = set(g_win.entities)
+    wsl_ent = set(g_wsl.entities)
+    win_rel = set(g_win.relations)
+    wsl_rel = set(g_wsl.relations)
+    print("Overlap:")
+    print(f"  entities  both={len(win_ent & wsl_ent)}  "
+          f"win-only={len(win_ent - wsl_ent)}  "
+          f"wsl-only={len(wsl_ent - win_ent)}")
+    print(f"  relations both={len(win_rel & wsl_rel)}  "
+          f"win-only={len(win_rel - wsl_rel)}  "
+          f"wsl-only={len(wsl_rel - win_rel)}")
+    print()
+
+    print(f"Plan ({direction}):")
+    if direction == "bidirectional":
+        print("  Both sides receive the union (nothing deleted on either side).")
+        print(f"  Windows will GAIN +{gains_win.entities_added_from_other} entities, "
               f"+{gains_win.relations_added_from_other} relations, "
               f"{gains_win.entities_observations_grew} entities with new observations")
-    else:
-        print("  Windows: unchanged")
-    if plan_for_wsl is not None:
-        print(f"  WSL     will gain  +{gains_wsl.entities_added_from_other} entities, "
+        print(f"  WSL     will GAIN +{gains_wsl.entities_added_from_other} entities, "
               f"+{gains_wsl.relations_added_from_other} relations, "
               f"{gains_wsl.entities_observations_grew} entities with new observations")
-    else:
+    elif direction == "wsl-to-windows":
+        lost_ent = len(win_ent - wsl_ent)
+        lost_rel = len(win_rel - wsl_rel)
+        print("  Target = Windows will be REPLACED with Source = WSL.")
+        print(f"  Windows will GAIN +{gains_win.entities_added_from_other} entities, "
+              f"+{gains_win.relations_added_from_other} relations (from WSL)")
+        if lost_ent or lost_rel:
+            print(f"  !! Windows will LOSE {lost_ent} entities, {lost_rel} relations")
+            print(f"  !! {lost_ent} entities only on Windows will be DELETED.")
+            print( "  -> Use --direction bidirectional to preserve both sides.")
         print("  WSL: unchanged")
+    elif direction == "windows-to-wsl":
+        lost_ent = len(wsl_ent - win_ent)
+        lost_rel = len(wsl_rel - win_rel)
+        print("  Target = WSL will be REPLACED with Source = Windows.")
+        print(f"  WSL will GAIN +{gains_wsl.entities_added_from_other} entities, "
+              f"+{gains_wsl.relations_added_from_other} relations (from Windows)")
+        if lost_ent or lost_rel:
+            print(f"  !! WSL will LOSE {lost_ent} entities, {lost_rel} relations")
+            print(f"  !! {lost_ent} entities only on WSL will be DELETED.")
+            print( "  -> Use --direction bidirectional to preserve both sides.")
+        print("  Windows: unchanged")
 
     if direction == "bidirectional" and st_from_wsl.entity_type_conflicts:
         print()
@@ -486,14 +522,23 @@ def run(
         for name, lt, rt in st_from_wsl.entity_type_conflicts:
             print(f"  - {name}: windows={lt!r} wsl={rt!r}")
 
+    # "no changes" iff the planned content equals the current content on
+    # every side that would be written.  Gains alone aren't enough: in
+    # one-way modes, the target also LOSES anything unique to it, and that
+    # counts as a pending change.
+    def _same_graph(a: Graph, b: Graph) -> bool:
+        return (set(a.entities) == set(b.entities)
+                and set(a.relations) == set(b.relations)
+                and all(
+                    list(a.entities[k].get("observations") or []) ==
+                    list(b.entities[k].get("observations") or [])
+                    for k in a.entities
+                ))
+
     no_changes = True
-    if plan_for_win is not None and (gains_win.entities_added_from_other
-                                     or gains_win.relations_added_from_other
-                                     or gains_win.entities_observations_grew):
+    if plan_for_win is not None and not _same_graph(plan_for_win, g_win):
         no_changes = False
-    if plan_for_wsl is not None and (gains_wsl.entities_added_from_other
-                                     or gains_wsl.relations_added_from_other
-                                     or gains_wsl.entities_observations_grew):
+    if plan_for_wsl is not None and not _same_graph(plan_for_wsl, g_wsl):
         no_changes = False
     if no_changes:
         print()
@@ -549,5 +594,66 @@ def main(argv: list[str] | None = None) -> int:
                windows_file=a.windows_file, wsl_file=a.wsl_file)
 
 
+# ============================================================================
+# Self-tests (run via `python mcp_memory_sync.py --self-test`)
+# ============================================================================
+
+def _self_test() -> int:
+    """Inline assertions covering direction-accurate dry-run output (B1)."""
+    import tempfile, contextlib, io as _io
+
+    def _ent(name, etype="thing", obs=()):
+        return json.dumps({"type": "entity", "name": name,
+                           "entityType": etype, "observations": list(obs)})
+
+    def _capture(direction, win_lines, wsl_lines):
+        with tempfile.TemporaryDirectory() as td:
+            wf = Path(td) / "win.json"; wf.write_text('\n'.join(win_lines), encoding="utf-8")
+            sf = Path(td) / "wsl.json"; sf.write_text('\n'.join(wsl_lines), encoding="utf-8")
+            buf = _io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = run(direction=direction, apply=False,
+                         windows_file=str(wf), wsl_file=str(sf))
+            return rc, buf.getvalue()
+
+    # T1: wsl-to-windows with disjoint win-only data must report LOSE.
+    rc, out = _capture("wsl-to-windows",
+                       win_lines=[_ent("C"), _ent("D"), _ent("E")],
+                       wsl_lines=[_ent("A"), _ent("B")])
+    assert "LOSE 3 entities" in out, f"T1 FAIL: missing LOSE phrasing in:\n{out}"
+    assert rc == 1, f"T1 FAIL: expected exit 1, got {rc}"
+    print("T1 PASS  wsl-to-windows reports 'LOSE 3 entities' on disjoint target")
+
+    # T2: bidirectional must report GAIN on both sides (no LOSE).
+    rc, out = _capture("bidirectional",
+                       win_lines=[_ent("C"), _ent("D"), _ent("E")],
+                       wsl_lines=[_ent("A"), _ent("B")])
+    assert "Windows will GAIN +2 entities" in out, f"T2 FAIL: missing Windows GAIN +2 in:\n{out}"
+    assert "WSL     will GAIN +3 entities" in out, f"T2 FAIL: missing WSL GAIN +3 in:\n{out}"
+    assert "LOSE" not in out, f"T2 FAIL: unexpected LOSE in bidirectional:\n{out}"
+    assert rc == 1, f"T2 FAIL: expected exit 1, got {rc}"
+    print("T2 PASS  bidirectional reports GAIN on both sides, no LOSE")
+
+    # T2b: identical graphs => no-op (exit 0).
+    rc, _ = _capture("bidirectional",
+                     win_lines=[_ent("X"), _ent("Y")],
+                     wsl_lines=[_ent("X"), _ent("Y")])
+    assert rc == 0, f"T2b FAIL: expected exit 0 on identical graphs, got {rc}"
+    print("T2b PASS identical graphs => exit 0")
+
+    # T2c: one-way no-op detection -- disjoint target => exit 1 even if zero gains.
+    rc, out = _capture("wsl-to-windows",
+                       win_lines=[_ent("C"), _ent("D")],
+                       wsl_lines=[])
+    assert rc == 1, f"T2c FAIL: expected exit 1 on one-way wipe, got {rc}"
+    assert "LOSE 2 entities" in out, f"T2c FAIL: missing LOSE 2 in:\n{out}"
+    print("T2c PASS one-way wipe is detected as pending change")
+
+    print("\nAll self-tests passed.")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        sys.exit(_self_test())
     sys.exit(main())

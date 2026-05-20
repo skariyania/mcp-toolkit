@@ -5,6 +5,29 @@ All notable changes to mcp-toolkit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-05-21
+
+### Fixed
+- `mcp_memory_sync.py`: dry-run summary now reflects the chosen direction.
+  One-way modes (`wsl-to-windows`, `windows-to-wsl`) explicitly enumerate
+  what data the target loses, not just what it gains, with `!!`-prefixed
+  warnings and a suggestion to switch to `bidirectional`. The previous
+  wording could imply "+5 gain" while silently overwriting 34 unique
+  target-side entities. (Exit codes were already correct; this changes
+  the wording and adds an overlap-stats block to the dry-run output.)
+- `mcp_memory_sync.py`: one-way modes now correctly flag pending changes
+  even when the target loses data with zero gains. Previously
+  `--direction wsl-to-windows` against an empty WSL graph would report
+  "no changes needed" while `--apply` would have wiped the target.
+- `mcp_memory_sync.py`: `--windows-file` / `--wsl-file` overrides are now
+  used as-is (paths this process can open directly), not run through the
+  cross-OS path translator that assumes config-declared native syntax.
+
+### Added
+- `mcp_memory_sync.py --self-test`: inline assertions for the direction-
+  accurate output (T1, T2, T2b, T2c). Run via `uv run mcp_memory_sync.py
+  --self-test`. No new dependencies, no `tests/` directory.
+
 ## [1.1.0] - 2026-05-21
 
 ### Added
