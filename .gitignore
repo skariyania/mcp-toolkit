@@ -27,3 +27,6 @@ secrets.env
 .env
 *.pem
 *.key
+
+# Devin local state
+.devin/

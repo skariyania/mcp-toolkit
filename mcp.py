@@ -4,11 +4,12 @@
 # ///
 """mcp - Unified, interactive entry point for MCP ops on Windows + WSL.
 
-This is the front door for the three lower-level scripts in this folder:
+This is the front door for the four lower-level scripts in this folder:
 
     mcp_doctor.py        - diagnose MCP server availability
     mcp_sync.py          - translate-and-distribute master config
     mcp_sync_daemon.py   - scheduled wrapper for sync (with reports + toasts)
+    mcp_memory_sync.py   - mirror the Memory MCP knowledge-graph across OSes
 
 `mcp.py` provides:
   - An interactive menu for users who'd rather pick options than memorise flags.
@@ -25,6 +26,7 @@ USAGE
     uv run mcp.py sync            # interactive sync (dry-run -> confirm -> apply)
     uv run mcp.py sync --auto     # interactive sync, but accept defaults non-interactively
     uv run mcp.py schedule        # interactive scheduling helper
+    uv run mcp.py memory          # mirror Memory MCP graph across OSes (safe)
     uv run mcp.py topology        # show where MCP files live (Win + WSL)
     uv run mcp.py menu            # explicit menu (same as no args)
 
@@ -50,6 +52,7 @@ THIS_DIR = Path(__file__).resolve().parent
 DOCTOR  = THIS_DIR / "mcp_doctor.py"
 SYNC    = THIS_DIR / "mcp_sync.py"
 DAEMON  = THIS_DIR / "mcp_sync_daemon.py"
+MEMSYNC = THIS_DIR / "mcp_memory_sync.py"
 
 
 # ============================================================================
@@ -405,6 +408,66 @@ def cmd_doctor_interactive() -> int:
 
 
 # ============================================================================
+# Memory-sync flow (mirror the Memory MCP knowledge-graph across OSes)
+# ============================================================================
+
+def cmd_memory_interactive() -> int:
+    section("Memory MCP graph sync")
+    print("Mirror the Memory MCP knowledge-graph file (the .json the memory")
+    print("MCP server reads + writes) between Windows and WSL.\n")
+    print("Default is a bidirectional union merge: entities are deduped by")
+    print("name (observations merged), relations by (from, to, relationType).\n")
+
+    # 1. Direction
+    direction_idx = prompt_choice(
+        "Direction:",
+        [
+            ("Bidirectional union merge", "both sides receive everything new from the other"),
+            ("WSL  -> Windows (one-way)", "WSL graph overwrites Windows graph"),
+            ("Windows -> WSL (one-way)", "Windows graph overwrites WSL graph"),
+        ],
+        default_index=0,
+    )
+    direction = ["bidirectional", "wsl-to-windows", "windows-to-wsl"][direction_idx]
+
+    # 2. Dry-run preview
+    section("Dry-run preview (no files will be modified)")
+    rc, out, err = run_script(MEMSYNC, ["--direction", direction], capture=True)
+    print(out)
+    if err.strip():
+        print("--- stderr ---")
+        print(err)
+    print(f"(dry-run exit code: {rc})")
+
+    if rc == 2:
+        print("\nDry-run errored -- won't proceed."); return rc
+    if rc == 3:
+        print("\nOne or both sides missing MEMORY_FILE_PATH. Fix that, then re-run."); return rc
+    if rc == 0:
+        print("\nNo changes needed. Nothing to apply."); return 0
+
+    # 3. Confirm + apply
+    section("Confirm")
+    print("Above is the DRY-RUN. The following will happen on apply:")
+    if direction == "bidirectional":
+        print("  - Both Windows and WSL memory files will be backed up to .bak.<timestamp>")
+        print("    then overwritten with the merged graph.")
+    elif direction == "wsl-to-windows":
+        print("  - Windows memory file will be backed up to .bak.<timestamp>")
+        print("    then overwritten with the WSL graph.")
+    else:
+        print("  - WSL memory file will be backed up to .bak.<timestamp>")
+        print("    then overwritten with the Windows graph.")
+    print()
+    if not prompt_yn("Apply these changes now?", default=False):
+        print("Cancelled. No files modified."); return 0
+
+    section("Applying")
+    rc2, _, _ = run_script(MEMSYNC, ["--direction", direction, "--apply"], capture=False)
+    return rc2
+
+
+# ============================================================================
 # Schedule flow
 # ============================================================================
 
@@ -462,6 +525,7 @@ def cmd_topology() -> int:
         ("Windows VS Code",        "%APPDATA%\\Code\\User\\mcp.json (separate schema)"),
         ("Windows Devin",          "%APPDATA%\\devin\\config.json (merged)"),
         ("Windows reports/state",  "%LOCALAPPDATA%\\mcp-sync\\"),
+        ("Windows memory graph",   "(MEMORY_FILE_PATH from Windsurf mcp_config.json, typically ${USERPROFILE}\\.config\\mcp\\memory.json)"),
         (".", ""),
         ("WSL master config",      "~/.codeium/windsurf/mcp_config.json"),
         ("WSL secrets",            "~/.codeium/windsurf/secrets.env (chmod 600)"),
@@ -469,6 +533,7 @@ def cmd_topology() -> int:
         ("WSL VS Code",            "~/.config/Code/User/mcp.json"),
         ("WSL Devin",              "~/.config/devin/config.json"),
         ("WSL reports/state",      "~/.local/share/mcp-sync/  +  ~/.local/state/mcp-sync/"),
+        ("WSL memory graph",       "(MEMORY_FILE_PATH from WSL Windsurf mcp_config.json, typically ~/.codeium/windsurf/memory-graph.json)"),
     ]
     for k, v in locations:
         if k == ".":
@@ -481,6 +546,7 @@ def cmd_topology() -> int:
     print("  mcp_doctor.py          — diagnose")
     print("  mcp_sync.py            — translate-and-distribute (always dry-run unless --apply)")
     print("  mcp_sync_daemon.py     — scheduled wrapper (env-configurable)")
+    print("  mcp_memory_sync.py     — mirror Memory MCP knowledge-graph across OSes (dry-run unless --apply)")
     return 0
 
 
@@ -494,11 +560,12 @@ def menu() -> int:
         print("Pick an action:")
         print("  1) Diagnose       — test which MCPs are working right now")
         print("  2) Sync           — push master config to other tools (safe: dry-run first)")
-        print("  3) Schedule       — set up periodic sync")
-        print("  4) Topology       — show where MCP files live across OSes")
+        print("  3) Memory sync    — mirror Memory MCP knowledge-graph across OSes")
+        print("  4) Schedule       — set up periodic sync")
+        print("  5) Topology       — show where MCP files live across OSes")
         print("  q) Quit")
         try:
-            v = input("\n  Choose [1-4 / q]: ").strip().lower()
+            v = input("\n  Choose [1-5 / q]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
@@ -509,8 +576,10 @@ def menu() -> int:
         elif v == "2":
             cmd_sync_interactive()
         elif v == "3":
-            cmd_schedule_interactive()
+            cmd_memory_interactive()
         elif v == "4":
+            cmd_schedule_interactive()
+        elif v == "5":
             cmd_topology()
         else:
             print("  invalid choice.")
@@ -532,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     s_sync = sub.add_parser("sync", help="Translate-and-distribute master config (safe).")
     s_sync.add_argument("--auto", action="store_true",
                         help="Use sensible defaults non-interactively (still asks before apply).")
+    sub.add_parser("memory", help="Mirror the Memory MCP knowledge-graph across OSes (safe).")
     sub.add_parser("schedule", help="Show env config + install commands for periodic sync.")
     sub.add_parser("topology", help="Show where MCP files live on Windows + WSL.")
     args = p.parse_args(argv)
@@ -542,6 +612,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor_interactive()
     if args.cmd == "sync":
         return cmd_sync_interactive(auto=getattr(args, "auto", False))
+    if args.cmd == "memory":
+        return cmd_memory_interactive()
     if args.cmd == "schedule":
         return cmd_schedule_interactive()
     if args.cmd == "topology":

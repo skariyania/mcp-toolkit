@@ -6,6 +6,12 @@
 
 Stdlib-only Python. No `pip install`. Cross-platform.
 
+> **2026-05 update**: Added `mcp_memory_sync.py` to mirror the Memory MCP's
+> knowledge-graph file between Windows and WSL.  Previously the toolkit only
+> synced *configs*, leaving the two memory graphs to silently diverge — and
+> in one observed case lose 39 entities + 60 relations across the OS
+> boundary.  See "Memory sync" below.
+
 ---
 
 ## Why this exists
@@ -30,6 +36,7 @@ If you use MCP servers (Atlassian, GitHub, Postgres, custom servers, …) across
 | `mcp_doctor.py` | Smoke-test every MCP server in your config. Auto-detects Windsurf/Cursor/Claude/VS Code/Devin configs across Windows/macOS/Linux/WSL. |
 | `mcp_sync.py` | Translate-and-distribute one master config to all tools. Unwraps bash wrapper scripts. Skips servers it can't translate. Backs up before every write. |
 | `mcp_sync_daemon.py` | One-shot scheduled wrapper (cron / Task Scheduler). Markdown reports + desktop toasts. Skips silently if not due. |
+| `mcp_memory_sync.py` | Mirror the Memory MCP knowledge-graph (`MEMORY_FILE_PATH` JSONL) across Windows + WSL. Bidirectional union merge by default; backs up before every write. |
 
 `mcp.py` invokes the others under the hood. Power users can call any script directly.
 
@@ -55,8 +62,9 @@ You'll see:
 Pick an action:
   1) Diagnose       — test which MCPs are working right now
   2) Sync           — push master config to other tools (safe: dry-run first)
-  3) Schedule       — set up periodic sync
-  4) Topology       — show where MCP files live across OSes
+  3) Memory sync    — mirror Memory MCP knowledge-graph across OSes
+  4) Schedule       — set up periodic sync
+  5) Topology       — show where MCP files live across OSes
   q) Quit
 ```
 
@@ -68,6 +76,9 @@ uv run mcp.py doctor
 
 # Translate-and-distribute (interactive, dry-run -> confirm -> apply)
 uv run mcp.py sync
+
+# Mirror the Memory MCP knowledge-graph across OSes (interactive, dry-run -> confirm -> apply)
+uv run mcp.py memory
 
 # Show the env-var config + cron / schtasks command
 uv run mcp.py schedule
@@ -97,20 +108,20 @@ The daemon de-bounces — running it more frequently just causes silent skips un
 
 ---
 
-## How the four scripts compose
+## How the five scripts compose
 
 ```
                  +-------------------+
    user  ─►      │     mcp.py        │  interactive menu / subcommands
                  +---------+---------+
                            │
-              ┌────────────┼────────────────────────┐
-              ▼            ▼                        ▼
-      mcp_doctor.py  mcp_sync.py         mcp_sync_daemon.py
-      (diagnose)     (translator +        (scheduler wrapper:
-                      distributor)         calls mcp_sync.py,
-                                           writes report,
-                                           fires toast)
+       ┌───────────┬───────┼────────────────┬──────────────────┐
+       ▼           ▼       ▼                ▼                  ▼
+mcp_doctor.py  mcp_sync.py  mcp_sync_daemon.py  mcp_memory_sync.py
+(diagnose)     (translator   (scheduler wrapper: (mirror Memory MCP
+                + distributor) calls mcp_sync.py,  knowledge-graph
+                              writes report,       JSONL across
+                              fires toast)         Windows + WSL)
 ```
 
 Each script is **self-contained, stdlib-only, and re-runnable**. They share no state in memory — only files (config JSON, secrets `.env`, state file, reports).
@@ -263,6 +274,79 @@ The daemon (`mcp_sync_daemon.py`):
 - Updates state **only on non-fatal exits**, so persistent failures keep retrying on each scheduled invocation (and keep firing notifications until you fix the cause).
 - Sends a desktop toast on error / partial-success / configurable.
 
+### Memory sync — "keep the Memory MCP graph in lockstep"
+
+```bash
+uv run mcp.py memory
+```
+
+`mcp_sync.py` syncs MCP *configs* across OSes; it deliberately doesn't touch the *data* files those servers write to. For most MCPs that's correct. For `@modelcontextprotocol/server-memory`, though, the data file IS the knowledge graph — it's the entire point of the server — and having two un-synced graphs (one on Windows, one on WSL) is exactly the kind of silent-data-loss trap that the toolkit exists to prevent.
+
+`mcp_memory_sync.py` closes that gap.
+
+#### What it does
+
+1. Reads `MEMORY_FILE_PATH` from each side's Windsurf MCP config (Windows + WSL). Refuses with a clear message if either side is unset — that's the "graph is silently ephemeral and resets on restart" anti-pattern called out in the Memory MCP limitation below.
+2. Resolves both files into paths this process can open — cross-OS via `\\wsl.localhost\<distro>\...` (Windows → WSL) or `/mnt/c/Users/<user>/...` (WSL → Windows). Honors the same `MCP_WSL_DISTRO` / `MCP_WSL_USER` / `MCP_WINDOWS_USER` env-var overrides used by `mcp_sync.py`.
+3. Parses each side's JSONL graph: one `{"type":"entity", "name":..., "observations":[...]}` or `{"type":"relation", "from":..., "to":..., "relationType":...}` per line.
+4. Computes a **bidirectional union merge**:
+   - Entities are deduped by `name`. Observations are merged preserving order (entries unique to the other side appended after the local ones). If the two sides disagree on `entityType` for the same name, the local (Windows) side's `entityType` is kept and a warning is printed naming the conflict.
+   - Relations are deduped by the triple `(from, to, relationType)`.
+   - Unrecognized lines are preserved verbatim (extras) so the round-trip is safe even if upstream introduces new node kinds.
+5. Prints the planned diff per side (counts of entities/relations/observations gained).
+6. On `--apply`, backs up each side to `.bak.<timestamp>` next to the original and atomically writes the merged graph. Without `--apply` it's a pure dry-run.
+
+#### Direction modes
+
+| Mode | Effect |
+|---|---|
+| `bidirectional` (default) | Both sides receive the union. Symmetric. Use this 99% of the time. |
+| `wsl-to-windows` | WSL graph overwrites Windows graph. Windows file is backed up. WSL untouched. |
+| `windows-to-wsl` | Windows graph overwrites WSL graph. WSL file is backed up. Windows untouched. |
+
+The one-way modes are useful when one side has been actively corrupted (e.g. truncated or rewritten by a script) and you want to forcibly resync from the known-good side.
+
+#### Example session
+
+```text
+Memory MCP graph sync
+  direction: bidirectional
+  mode:      DRY-RUN (no writes)
+
+  Windows side (windows): /mnt/c/Users/<user>/.config/mcp/memory.json
+    declared in config as: C:\Users\<user>\.config\mcp\memory.json
+    entities: 12   relations: 18   extras: 0
+  WSL side     (wsl): /home/<user>/.codeium/windsurf/memory-graph.json
+    declared in config as: /home/<user>/.codeium/windsurf/memory-graph.json
+    entities: 39   relations: 60   extras: 0
+
+Plan:
+  Windows will gain  +30 entities, +45 relations, 3 entities with new observations
+  WSL     will gain  +3 entities, +3 relations, 0 entities with new observations
+
+(dry-run -- pass --apply to write)
+```
+
+#### Bypassing config discovery
+
+If you want to merge two specific files (e.g. a backup against the live graph), use the override flags:
+
+```bash
+uv run mcp_memory_sync.py \
+  --windows-file "C:\Users\me\memory.json.bak.20260520-104900" \
+  --wsl-file     "/home/me/.codeium/windsurf/memory-graph.json" \
+  --direction wsl-to-windows --apply
+```
+
+#### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | No changes needed (graphs already in sync, or `--apply` succeeded). |
+| 1 | Changes pending (dry-run with diffs). |
+| 2 | Error (file read, parse, etc.). |
+| 3 | One side missing `MEMORY_FILE_PATH` — refused. Fix the config and re-run, or use `--windows-file` / `--wsl-file`. |
+
 ### Topology — "remind me where everything lives"
 
 ```bash
@@ -306,6 +390,8 @@ To set them persistently on Windows: `setx VAR value`. On WSL: append `export VA
 | `%LOCALAPPDATA%\mcp-sync\reports\latest.md` | `~/.local/share/mcp-sync/reports/latest.md` | daemon (latest report copy) |
 | `%TEMP%\mcp_sync_toast.ps1` | n/a | daemon (notification helper) |
 | `<target file>.bak.<ts>` | (same) | sync (backup before overwrite) |
+| `<MEMORY_FILE_PATH>` (read from Windsurf MCP config) | `<MEMORY_FILE_PATH>` (read from Windsurf MCP config) | memory-sync (read + write the knowledge-graph JSONL) |
+| `<memory file>.bak.<ts>` | (same) | memory-sync (backup before overwrite) |
 
 The toolkit **never** writes to `secrets.env` / `.env` automatically — only when you pass `--mirror-secrets` and confirm `yes` at the prompt.
 
@@ -397,6 +483,24 @@ Accepts `<int><suffix>` with suffix in `s|m|h|d|w`. No "every weekday", no "9:30
 ### Memory MCP needs an explicit `MEMORY_FILE_PATH`
 
 If `MEMORY_FILE_PATH` is empty (the default of `@modelcontextprotocol/server-memory`), the graph is silently ephemeral and resets on restart. The toolkit assumes you set it explicitly (master configs in this setup do; bare `npx` invocations elsewhere may not).
+
+`mcp_memory_sync.py` enforces this: if either side's Windsurf MCP config has an empty (or absent) `MEMORY_FILE_PATH`, the script refuses with exit code 3 and tells you which side to fix. There's no `--allow-empty` opt-out — the failure mode (silent data loss across restarts) is too bad to make easy.
+
+### Memory sync is union, not snapshot
+
+`mcp_memory_sync.py` defaults to a *bidirectional union merge*: nothing is ever deleted. If you delete an entity on one side and then sync, the entity will come back from the other side. That's the right default for a knowledge graph (you really, really don't want a stale tab on the wrong OS to silently nuke your memory), but it means:
+
+- To actually delete an entity, delete it on **both** sides before syncing, **or**
+- Use one of the one-way modes (`--direction wsl-to-windows` / `windows-to-wsl`) which overwrite the target without trying to preserve its content. The target is still backed up to `.bak.<ts>` before the overwrite.
+
+### Memory sync isn't transactional across OSes
+
+Each side's write is atomic on that side (write-temp + rename). But there's a gap between the Windows write and the WSL write during which a third party (e.g. the live Memory MCP server) could read a state where Windows is updated but WSL isn't. In practice this is fine because:
+
+1. Memory MCP doesn't continuously poll its file — it reads on startup and writes on mutation.
+2. The graphs are eventually consistent: any divergence introduced during the gap will be merged on the next sync run.
+
+If you ever need true atomicity, stop both Memory MCP servers, sync, then restart them.
 
 ---
 
