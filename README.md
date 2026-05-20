@@ -78,15 +78,19 @@ uv run mcp.py topology
 
 ### 3) Drop a daily auto-sync into cron / Task Scheduler
 
+The easiest path: run `uv run mcp.py schedule` from inside this repo. It prints the install command with the **actual absolute path** of `mcp_sync_daemon.py` filled in for whatever location you cloned the repo into.
+
+If you'd rather write it by hand, replace `<abs path>` with your install location (e.g. `~/code/mcp-toolkit`, `D:\projects\mcp-toolkit`, `/opt/mcp-toolkit` — wherever you put it):
+
 ```cmd
 :: Windows (run once)
 schtasks /create /tn "MCP Sync" /sc daily /st 09:00 /tr ^
-  "uv run \"%USERPROFILE%\dev\personal\mcp-toolkit\mcp_sync_daemon.py\""
+  "uv run \"<abs path>\mcp_sync_daemon.py\""
 ```
 
 ```bash
-# WSL (crontab -e), default frequency = 1 day
-0 9 * * *  /home/$USER/.local/bin/uv run /home/$USER/dev/personal/mcp-toolkit/mcp_sync_daemon.py >> ~/.local/state/mcp-sync/cron.log 2>&1
+# WSL / Linux (crontab -e), default frequency = 1 day
+0 9 * * *  /usr/bin/python3 <abs path>/mcp_sync_daemon.py >> ~/.local/state/mcp-sync/cron.log 2>&1
 ```
 
 The daemon de-bounces — running it more frequently just causes silent skips until `MCP_SYNC_FREQUENCY` elapses.
