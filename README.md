@@ -204,6 +204,8 @@ All env vars are **optional**; sensible defaults come from your current OS.
 | `MCP_SYNC_NOTIFY_ON` | `error` | `error` \| `always` \| `never` |
 | `MCP_SYNC_REPORT_DIR` | OS-aware | Windows: `%LOCALAPPDATA%\mcp-sync\reports`; Linux: `~/.local/share/mcp-sync/reports` |
 | `MCP_SYNC_STATE_DIR` | OS-aware | `%LOCALAPPDATA%\mcp-sync` / `~/.local/state/mcp-sync` |
+| `MCP_WINDOWS_USER` | auto-detected | Windows username for cross-OS path translation. Set if Windows + WSL usernames differ. |
+| `MCP_WSL_USER` | auto-detected | WSL username for cross-OS path translation. Same caveat. |
 
 To set them persistently on Windows: `setx VAR value`. On WSL: append `export VAR=value` to `~/.bashrc` or `~/.profile`.
 
@@ -258,7 +260,13 @@ This shim is a Linux-only Python helper that lives next to the wrapper. The tran
 
 ### Cross-OS path translation assumes a specific user-directory layout
 
-For UNC paths (`\\wsl.localhost\Ubuntu\home\<user>`) and `/mnt/c/Users/<user>` translation, the toolkit picks the first user dir it finds (or the literal user `skariyania` as fallback). On a fresh machine with a different username, the cross-OS path expansion logic may need a small tweak (`expand_for_os` in `mcp_sync.py` and `_default_*` helpers).
+For UNC paths (`\\wsl.localhost\Ubuntu\home\<user>`) and `/mnt/c/Users/<user>` translation, the toolkit:
+
+1. Honors `MCP_WSL_USER` and `MCP_WINDOWS_USER` env vars if set.
+2. Otherwise picks the first user directory found under the relevant root.
+3. Otherwise falls back to `$USER` / `%USERNAME%`.
+
+On most setups (same username on both sides) this just works. If your Windows username and WSL username differ — e.g. `John.Doe` on Windows and `john` in WSL — set `MCP_WINDOWS_USER=John.Doe` and `MCP_WSL_USER=john` to make cross-OS sync deterministic.
 
 For same-OS sync, this isn't an issue — `${USERPROFILE}` / `$HOME` resolve normally.
 
