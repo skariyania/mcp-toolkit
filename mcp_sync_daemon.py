@@ -50,13 +50,18 @@ USAGE
     uv run mcp_sync_daemon.py --latest-report
 
 SCHEDULING
-    Windows Task Scheduler (one-time install, runs daily at 09:00):
-        schtasks /create /tn "MCP Sync" /sc daily /st 09:00 /tr ^
-            "uv run \"%USERPROFILE%\\dev\\personal\\tools\\mcp\\mcp_sync_daemon.py\""
+    Easiest: run `mcp.py schedule` — it prints the OS-specific install command
+    with the *actual* path to this script filled in.
 
-    WSL cron (`crontab -e`):
-        0 9 * * *  /home/$USER/.local/bin/uv run \\
-                   /home/$USER/dev/personal/mcp-toolkit/mcp_sync_daemon.py
+    Or write it yourself, replacing <abs/path> with your install location:
+
+      Windows Task Scheduler:
+          schtasks /create /tn "MCP Sync" /sc daily /st 09:00 /tr ^
+              "uv run \"<abs\\path\\to>\\mcp_sync_daemon.py\""
+
+      WSL / Linux cron (`crontab -e`):
+          0 9 * * *  /usr/bin/python3 <abs/path/to>/mcp_sync_daemon.py \\
+                     >> ~/.local/state/mcp-sync/cron.log 2>&1
 
     Either way the script handles its own debouncing — running it more often
     than MCP_SYNC_FREQUENCY just causes silent skips.
